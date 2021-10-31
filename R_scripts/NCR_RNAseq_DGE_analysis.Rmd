@@ -1,0 +1,708 @@
+---
+title: "NCR RNAseq - DEG analysis"
+author: "WD, NW"
+description: "This R code is to replicate the analyses, figures and tables from the research article entitled: Multi-insecticide resistant malaria vectors in the field remain susceptible to malathion, despite the presence of Ace1 point mutations, 2021"
+date: "9/16/2020"
+output:
+  pdf_document: default
+  html_document: default
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Importing libraries:
+```{r import }
+library(edgeR)
+library(stringr)
+library(tidyverse)
+
+# set baseFolder / working directory to a "data" folder where all relevant STables "input_data" are saved as .txt files.
+# baseFolder='~/data/'
+```
+## 1. Loading up the data
+
+### 1.1. count data
+
+```{r readCount}
+# read in the results
+rawCounts <- read.table(paste(baseFolder,'02_featureCount_results','featureCounts.strand2.txt',sep='/'), header = T)
+
+rownames(rawCounts) = rawCounts$Geneid
+# cleaning up column names
+names(rawCounts)[ 7:ncol(rawCounts) ] = str_remove( names(rawCounts)[ 7:ncol(rawCounts) ] , "X.scicore.home.muellepi.GROUP.NCR_RNAseq.bamfiles.bam_00[12].")
+names(rawCounts)[ 7:ncol(rawCounts) ] = str_remove( names(rawCounts)[ 7:ncol(rawCounts) ] , "Aligned.sortedByCoord.out.bam")
+
+# dropping the Chr start, end strand and length columns : 2:6
+rawCounts <- rawCounts[ -c(1:6) ]
+```
+
+### 1.2. experimental setup data
+
+There is a number of factors to take into account.
+
+* `run` : which run the sample was part of, in order to detect a potential batch effect.
+* `individual` accounts for individual samples, this shall be used to group together the technical replicates
+* `population` :
+  * Agb : Agboville
+  * Tia : Tiassale
+  * Dab : Dabou
+  * Ng : Ngousso (lab strain)
+  * Ma : Mali-NIH (lab strain)
+
+* `insecticide` :
+  * C : Control
+  * D : Deltamethrin
+  * M : Malathion
+* `environment` : Field or Lab strain
+
+```{r readGroup}
+rawGroups <- read.table(paste(baseFolder,'sample_information.txt',sep='/'), header = T)
+
+rawGroups$sampleName = as.character(rawGroups$sampleName)
+rawGroups$population = as.factor(rawGroups$population)
+rawGroups$insecticide = as.factor(rawGroups$insecticide)
+rawGroups$environment = as.factor(rawGroups$environment)
+rawGroups$individual = as.factor(rawGroups$individual)
+rawGroups$run = as.factor(rawGroups$run)
+
+rawGroups$population = relevel(rawGroups$population , 'Ma')
+rawGroups$insecticide = relevel(rawGroups$insecticide , 'C')
+rawGroups$environment = relevel(rawGroups$environment , 'Lab')
+# I create a unique "groups" factor which combines population and insecticide in order to ease later visualization
+rawGroups$groups = paste( rawGroups$population , rawGroups$insecticide ,sep='_' )
+
+str(rawGroups)
+```
+
+### 1.3. dropping bad samples
+
+samples `1_Agb_D02_S1_001` and `1_Agb_D02_S1_002` from individual `S1` shall be excluded as the sequencing failed in these sample : they have both a very low (~2M) number of reads with low mapping rates as well.
+
+```{r dropping}
+counts = rawCounts[ , !( names(rawCounts) %in% c('1_Agb_D02_S1_001','1_Agb_D02_S1_002') )  ]
+groups = rawGroups[ !rawGroups$individual == "S1" ,]
+groups$individual = droplevels(as.factor(groups$individual))
+```
+
+### 1.3.2 save count matrix and sample info
+```{r}
+#write.table(rawCounts, file="rawCounts_13299x110n.txt", row.names=F, dec=".", sep="\t")
+#write.table(rawGroups, file="rawGroups_7varx110n.txt", row.names=F, dec=".", sep="\t")
+
+#write.table(counts, file="counts_13299x108n.txt", row.names=F, dec=".", sep="\t")
+#write.table(groups, file="groups_7varx108n.txt", row.names=F, dec=".", sep="\t")
+```
+
+
+## 1.4. loading annotation
+
+```{r readAnnot}
+annotations <- read.table(paste(baseFolder, 'NCR_annotation_V4.txt' ,  sep=""), header=T )
+annotations <- annotations %>% select(gene_id, gene_name)
+rownames( annotations ) = annotations$gene_id
+annotations$gene_name = as.character(annotations$gene_name)
+```
+
+## 2. handling technical replicates
+
+### 2.1. Assessing potential batch effect
+
+Our first action will be to plot the different sample in a lower dimensionnal space to have a look at the distances between technical replicates. 
+Typically, we want to assess if the variation between technical replicate is lower as that between biological replicates.
+
+
+```{r batch1}
+# we declare a DGEList object, for now our grouping is just by run, but it does not matter too much at that point
+y <- DGEList(counts, group=groups$run)
+
+# we perform a filtering by expression using default parameters. 
+keep <- filterByExpr(y)
+print(summary(keep))
+y <- y[keep, , keep.lib.sizes=FALSE]
+
+# basic normalization
+y <- calcNormFactors(y , method="TMM")
+
+groups$groups = paste( groups$population , groups$insecticide ,sep='_' )
+
+# this takes a long time to compute. Uncomment if you want to generate these 11 plots
+#for( g in unique(groups$groups))
+#{
+#  samples = groups$sampleName[ groups$groups==g ]
+#  plotMDS(y$counts[,samples] , labels = samples,main=g)  
+#}
+
+```
+```{r batch2}
+# S2A Fig. Multi-dimensional scaling (MDS) plots showing the relative similarities between expression profiles of different samples. 
+plotMDS(y, pch=15, col = c('orange','blue')[groups$run])
+legend('topleft',c('run1','run2'),col=c('orange','blue'),pch=15)
+```
+Only in one instance (S49,S50) the technical replicates are farther apart than 2 biological replicates.
+Overall sample group by technical replicate very well, so it seems reasonable to sum up the technical replicates together.
+
+See https://support.bioconductor.org/p/125489/ for a discussion on this subject. It seems acceptable to sum up technical replicate IF we cannot detect any particular associated batch effect. 
+
+
+Let's try another, more statistically based approach, from the [edgeR user's guide ](https://bioconductor.org/packages/release/bioc/vignettes/edgeR/inst/doc/edgeRUsersGuide.pdf)
+
+```{r batch3 }
+#design <- model.matrix(~ groups$run + groups$groups)
+design <- model.matrix(~ groups$individual + groups$run)
+y <- estimateDisp(y, design, robust=TRUE) # estimate negative binomial dispersion
+fit <- glmQLFit(y, design, robust=TRUE) # computing quasi-likelihood dispersion
+qlf <- glmQLFTest(fit, coef=55) # we target run2 -> that should give us the difference between run1 and run2 -> batch effect
+topTags(qlf)
+```
+When using a design of run+groups, the run is not associated to any significantly DE gene.
+When using a design of run+individual, the run is associated to a single DE gene : ACON009526 with a log2FC of 0.02172764.
+
+
+While we are at it, let's plot in the low dimensional space the other variables
+```{r batch4 }
+par(mfrow=c(3,1))
+
+plotMDS(y, pch=15, col = c('orange','blue')[groups$environment])
+legend('topleft',levels(groups$environment),col=c('orange','blue'),pch=15)
+
+colorScale = c('#66c2a5','#fc8d62','#8da0cb','#e78ac3')
+plotMDS(y, pch=15, col = colorScale[groups$insecticide])
+legend('topleft',levels(groups$insecticide),col=colorScale,pch=15)
+
+colorScale = c('#1b9e77','#d95f02','#7570b3','#e7298a','#66a61e')
+plotMDS(y, pch=15, col = colorScale[groups$population])
+legend('topleft',levels(groups$population),col=colorScale,pch=15)
+```
+
+
+### 2.2. summing up replicates
+
+Summing counts:
+```{r sumCounts}
+mergedCounts = data.frame(geneId = row.names(counts)) # creating new count dataframe, initializing with some dummy values
+row.names(mergedCounts) = row.names(counts) # adding the row names
+
+for( ind in levels(groups$individual)) # for each individual
+{
+  #print(paste(ind , groups$sampleName[groups$individual==ind]))
+  cols= groups$sampleName[groups$individual==ind] #grab the 2 columns corresponding to this individual
+  mergedCounts[str_remove( cols[1] , "_001")] = counts[cols[1]] + counts[cols[2]] # summing them up and putting the result in our new data frame
+}
+mergedCounts = mergedCounts[ -c(1)] # I remove the first columns containing geneId, it is redundant with row names anyway
+print(dim(mergedCounts))
+print(names(mergedCounts))
+```
+```{r sumGroups}
+row.names(groups) =  groups$sampleName
+
+mergedGroup = data.frame(sampleName = names(mergedCounts) )
+mergedGroup$groups = groups[paste0( names(mergedCounts) , '_001' ) , 'groups']
+mergedGroup$population = groups[paste0( names(mergedCounts) , '_001' ) , 'population']
+mergedGroup$insecticide = groups[paste0( names(mergedCounts) , '_001' ) , 'insecticide']
+mergedGroup$environment = groups[paste0( names(mergedCounts) , '_001' ) , 'environment']
+
+mergedGroup
+```
+
+```{r}
+###save count matrix and sample info for merged counts
+#write.table(mergedCounts, file="mergedCounts_13299x54n.txt", row.names=F, dec=".", sep="\t")
+#write.table(mergedGroup, file="mergedGroups_5varx54n.txt", row.names=F, dec=".", sep="\t")
+```
+
+
+## 3. DE analysis with summed up replicates
+
+### 3.1. setting up , filtering and normalization
+
+```{r normalization}
+# we declare a DGEList object, for now our grouping is just by run, but it does not matter too much at that point
+# group by population
+y <- DGEList(mergedCounts, group=mergedGroup$population)
+
+# we perform a filtering by expression using default parameters. 
+keep <- filterByExpr(y)
+print("Filter by expression kept genes :")
+print(summary(keep))
+y <- y[keep, , keep.lib.sizes=FALSE]
+
+# TMM normalization.
+# https://genomebiology.biomedcentral.com/articles/10.1186/gb-2010-11-3-r25
+# The TMM method implements the trimmed mean of M-values proposed by
+#     Robinson and Oshlack (2010). By default, the M-values are weighted
+#     according to inverse variances, as computed by the delta method
+#     for logarithms of binomial random variables. If ‘refColumn’ is
+#     unspecified, then the library whose upper quartile is closest to
+#     the mean upper quartile is used.
+# note : filtering removed most 0s, so TMMwsp is not needed
+# note2: normalization accounts for biases introduced when only comparing expression fractions (cpm,rpkm,tpm) ; this accounts, for instance, for differences in the number of expressed genes.
+
+#The performance of the TMM normalization procedure can be examined using mean-difference(MD) plots. 
+#This visualizes the library size-adjusted log-fold change between two libraries(the difference) against the average log-expression across those libraries (the mean). 
+#The fol-lowing MD plot is generated by comparing sample 1 against an artificial library constructed from the average of all other samples.
+#Ideally, the bulk of genes should be centered at a log-fold change of zero. 
+#This indicates that any composition bias between libraries has been successfully removed. This quality check should be repeated by constructing a MD plot for each sample.
+y <- calcNormFactors(y , method="TMM")
+mergedLibSize <- rownames_to_column(y$samples, "sampleName") # NW: check library size
+write.table(mergedLibSize, file="mergedCounts_lib.size.54n.txt", row.names=F, dec=".", sep="\t")
+# again this takes a long time to compute, and these are stored in the cluster anyhow. uncomment to generate the 55 plots
+#for( i in 1:dim(y$counts)[2]){
+#  pngName = paste(baseFolder,'03_DGE_analysis_figures',paste('MDplot',row.names(y$samples)[i],'png',sep='.'),sep='/')
+#  png( pngName )
+#  plotMD(cpm( y , log=TRUE) , column=i)
+#  abline(h=0, col="red", lty=2, lwd=2)
+#  dev.off()
+#}
+# nothing jumps off as being completely weird
+
+```
+
+Note that now that counts are generally higher the number of kept gene is higher as well.
+
+Let's create some MDS plot with different colorization.
+S2B Fig & S2C Fi.Multi-dimensional scaling (MDS) plots showing the relative similarities between expression profiles of different samples.
+```{r mds}
+par(mfrow=c(3,1))
+
+plotMDS(y, pch=15, col = c('orange','blue')[mergedGroup$environment])
+legend('topleft',levels(mergedGroup$environment),col=c('orange','blue'),pch=15)
+
+colorScale = c('#66c2a5','#fc8d62','#8da0cb','#e78ac3')
+plotMDS(y, pch=15, col = colorScale[mergedGroup$insecticide])
+legend('topleft',levels(mergedGroup$insecticide),col=colorScale,pch=15)
+
+colorScale = c('#1b9e77','#d95f02','#7570b3','#e7298a','#66a61e')
+plotMDS(y, pch=15, col = colorScale[mergedGroup$population])
+legend('topleft',levels(mergedGroup$population),col=colorScale,pch=15)
+
+```
+
+The 2 first principal componenta of the MD plot show a good separation between lab strains and field strains.
+The 2 lab strains are well separated. 
+Apart from that, all field strain seem grouped together, independent of population or insecticide.
+
+
+```{r mds2 }
+#cScale = c('#a6cee3','#1f78b4','#b2df8a','#33a02c','#fb9a99','#e31a1c','#fdbf6f','#ff7f00','#cab2d6','#6a3d9a','#ffff99')
+cScale = c("#bae4b3","#74c476", "#238b45",  # Agboville
+           "#bdd7e7", "#6baed6", "#2171b5", # Dabou
+           "#88419d", "#f768a1",            # Mali & Ngousso
+           "#fdbe85", "#fd8d3c", "#d94701") # Tiassalé
+grouping = as.factor( paste( mergedGroup$population , mergedGroup$insecticide) )
+plotMDS(y, pch=15, col = cScale[ grouping ])
+legend('topleft', levels(grouping), col=cScale, pch=15)
+# legend('topleft',levels(grouping),col=colorScale,pch=15)
+```
+
+This is just me playing around with PCA and MDS. Ignore.
+```{r foolingAround }
+mds = plotMDS(y) # perform MDS analysis "optimized" for microarray data, which uses an euclidian distance between the top 500 genes, chosen separately for each pairwise distance.
+X = cmdscale( mds$distance.matrix , k=50 , eig=T ) # I reuse the distance matrix to call Classical (Metric) Multidimensional Scaling myself 
+# X$eig -> contains the eigen values BUT "Note that because of numerical errors the computed eigenvalues need not all be non-negative, and even theoretically the representation could be in fewer than n - 1 dimensions." 
+# so I have to account for spurious negative values
+GOF = cumsum( X$eig[ X$eig>0 ] ) / sum( X$eig[ X$eig>0 ] ) #computes goodness of fit for a number of components
+
+# doing PCA
+pca = prcomp(t(cpm(y)) , scale=T) #<- by default unscaled
+pca_summary = summary(pca)
+print(pca_summary)
+
+# plotting the first N components of the PCA
+N=3
+for(c1 in 1:(N-1)){
+  for(c2 in 2:N ){
+    if( c1 == c2 ){ next }
+
+    plot( c() , c() , 
+      xlim=c( min( pca$x[ , c1]  ), max( pca$x[ , c1] ) ) , ylim=c( min( pca$x[ , c2]  ), max( pca$x[ , c2] ) ) , 
+      xlab = paste0('PC',c1,' - ',100*pca_summary$importance[2,c1],'%' ),
+      ylab = paste0('PC',c2,' - ',100*pca_summary$importance[2,c2],'%' ))
+    text( pca$x[ , c1] , pca$x[ , c2] , labels = rownames(pca$x)  , col = c('orange','blue')[mergedGroup$environment] ) 
+  }
+}
+
+```
+This is the end of Wandrille playing with MDS.
+
+### 3.2. model fitting
+
+We create the following design matrices, using the strategy described in section 3.2.4 of the [edgeR manual](https://bioconductor.org/packages/release/bioc/vignettes/edgeR/inst/doc/edgeRUsersGuide.pdf)
+```{r models }
+
+#I create a special vector that groups the 2 lab strains while keeping the field ones separate
+pop_LabMixed = as.character( mergedGroup$environment )
+# pop_LabMixed[ pop_LabMixed == 'Field' ] = as.character(pop[pop_LabMixed == 'Field'])
+# error -is this correct? works:
+# pop_LabMixed[ pop_LabMixed == 'Field' ] = as.character(pop_LabMixed[pop_LabMixed == 'Field'])
+pop_LabMixed[ pop_LabMixed == 'Field' ] = as.character(mergedGroup$population[pop_LabMixed == 'Field']) # from V2
+pop_LabMixed = relevel( as.factor(pop_LabMixed) , ref = 'Lab' )
+
+
+pop_insecticide = paste(mergedGroup$population , mergedGroup$insecticide , sep='_')
+mixed_insecticide = paste( pop_LabMixed , mergedGroup$insecticide , sep='_')
+env_insecticide = paste( mergedGroup$environment , mergedGroup$insecticide , sep='_')
+
+model_population_insecticide = model.matrix(~0 + pop_insecticide  )  # all 5 populations sep. (2 Lab sep., 3 field sep.)
+model_labMixed_insecticide = model.matrix(~0 + mixed_insecticide ) # regroup 2 Lab as ONE lab pop. with n=10 bio.rep. but keep 3 field separately ==> this is the model we decided is the BEST!
+model_environment_insecticide = model.matrix(~0 + env_insecticide ) # group 2 Lab pop as ONE n=10 & 3 field as ONE n=15
+
+```
+
+We fit the negative binomials to our data for the different models :
+```{r fitting }
+### estimating dispersion
+## Maximizes the negative binomial likelihood to give the estimate of the common, trended and tagwise dispersions across all tags. 
+fitted_population_insecticide <- estimateDisp(y , design = model_population_insecticide )
+fitted_labMixed_insecticide <- estimateDisp(y , design = model_labMixed_insecticide )
+fitted_environment_insecticide <- estimateDisp(y , design = model_environment_insecticide )
+
+print(paste('population_insecticide common dispersion' , fitted_population_insecticide$common.dispersion ) )
+print(paste('labMixed_insecticide common dispersion' , fitted_labMixed_insecticide$common.dispersion ) )
+print(paste('environment_insecticide common dispersion' , fitted_environment_insecticide$common.dispersion ) )
+
+plotBCV( fitted_population_insecticide ) 
+plotBCV( fitted_labMixed_insecticide )
+plotBCV( fitted_environment_insecticide )
+
+# from https://support.bioconductor.org/p/75260/
+# That article characterized sqrt(dispersion) as the "biological coefficient of variation (BCV)", 
+# and that is the terminology we have used since in the edgeR articles and documentation. 
+# The BCV is the relative variability of expression between biological replicates.
+
+# If you estimate dispersion = 0.19, then sqrt(dispersion) = BCV = 0.44. 
+# This means that the expression values vary up and down by 44% between replicates.
+
+# An important point that is easy to miss, is that the BCV measures the relative variability of true expression levels, 
+# not the variability of measured expression levels. The BCV represents the relative variability 
+# that you would observe if you were able to measure the true expression levels perfectly in each RNA sample, 
+# even though one can't actually do that. It represents the variability that remains after the Poisson variability 
+# from sequencing has been removed.
+
+# To repeat, BCV does not represent the variability between observed expression levels. 
+# It is the variability of true expression levels. You cannot measure BCV using an undergraduate formula 
+# from the observed counts or RPKM values.
+
+#also : https://davetang.org/muse/2011/07/27/edgers-common-dispersion/
+```
+We estimate the Quasi Likelihood dispersions for the different models  (see section 2.9.4 in edgeR manual):
+```{r glm }
+# For the QL dispersions, estimation can be performed using the glmQLFitfunction. 
+# This returns a DGEGLMobject containing the estimated values of the GLM coefficients for each gene, 
+# as well as the fitted mean-QL dispersion trend, the squeezed QL estimates and the prior degrees of freedom (df). 
+# These can be visualized with the plotQLDispfunction.
+fitted_population_insecticide_GLM <- glmQLFit( fitted_population_insecticide , model_population_insecticide, robust=TRUE)
+fitted_labMixed_insecticide_GLM <- glmQLFit( fitted_labMixed_insecticide , model_labMixed_insecticide, robust=TRUE)
+fitted_environment_insecticide_GLM <- glmQLFit( fitted_environment_insecticide , model_environment_insecticide, robust=TRUE)
+
+
+plotQLDisp(fitted_population_insecticide_GLM)
+plotQLDisp(fitted_labMixed_insecticide_GLM)
+plotQLDisp(fitted_environment_insecticide_GLM)
+```
+
+With these fitted model, we can now ask most of our biological questions in the form of contrasts.
+
+## 3.3. Aim 1 : To characterise the gene expression profiles of phenotyped An. coluzzii field populations
+
+Here I will interpret this that we want to contrast field populations to lab populations, treated with the control.
+
+First, let's keep Fields and Lab populations grouped - discarded, this is too simplistic a model for our purpose
+```{r pop1 }
+con <- makeContrasts( env_insecticideField_C - env_insecticideLab_C , levels = model_environment_insecticide )
+tr <- glmTreat(fitted_environment_insecticide_GLM, contrast=con, lfc=0) # no Log2FC threshold
+print('field versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests(tr,p.value=0.01))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr , n = nrow(tr))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Field_C_Lab_C.edgeR_groupedModel.allGenes.txt',sep='/') )
+
+#qlf1 <- glmQLFTest(fitted_environment_insecticide_GLM, contrast=con) <- this is equivalent when the log2FC threshold is 0
+#print(summary(decideTests(qlf1 , p.value=0.01))) #by default : BH , FDR <= 0.05 , 
+
+#plotMD(tr)
+``` 
+
+
+Now we keep Lab populations grouped, but look at each Field populations separately.
+This is the model we agreed to in the meeting with Nadja and Pie (22/09/2020):
+
+```{r pop2}
+con_Agb <- makeContrasts( mixed_insecticideAgb_C  - mixed_insecticideLab_C ,
+                          levels = model_labMixed_insecticide )
+con_Dab <- makeContrasts( mixed_insecticideDab_C  - mixed_insecticideLab_C ,
+                          levels = model_labMixed_insecticide )
+con_Tia <- makeContrasts( mixed_insecticideTia_C  - mixed_insecticideLab_C ,
+                          levels = model_labMixed_insecticide )
+
+tr_Agb <- glmTreat(fitted_labMixed_insecticide_GLM, contrast=con_Agb, lfc=0) # no Log2FC threshold
+print('Agb versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests( tr_Agb , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 . I want to use FDR < 0.01
+tmp = topTags(tr_Agb , n = nrow(tr_Agb))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Agb_C_Lab_C.edgeR_mixedModel.allGenes.txt',sep='/') )
+
+tr_Dab <- glmTreat(fitted_labMixed_insecticide_GLM, contrast=con_Dab, lfc=0) # no Log2FC threshold
+print('Dab versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests( tr_Dab , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr_Dab , n = nrow(tr_Dab))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Dab_C_Lab_C.edgeR_mixedModel.allGenes.txt',sep='/') )
+
+
+tr_Tia <- glmTreat(fitted_labMixed_insecticide_GLM, contrast=con_Tia, lfc=0) # no Log2FC threshold
+print('Tia versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests( tr_Tia , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr_Tia , n = nrow(tr_Tia))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Tia_C_Lab_C.edgeR_mixedModel.allGenes.txt',sep='/') )
+```
+
+
+What are the commonalities between the DE genes of field populations ?
+```{r venn }
+library(VennDiagram)
+library(RColorBrewer)
+tmp = decideTests( tr_Tia , p.value = 0.01 )
+Tia_Up = rownames(tmp)[ tmp == 1 ]
+Tia_Down = rownames(tmp)[ tmp == -1 ]
+tmp = decideTests( tr_Dab , p.value = 0.01 )
+Dab_Up = rownames(tmp)[ tmp == 1 ]
+Dab_Down = rownames(tmp)[ tmp == -1 ]
+tmp = decideTests( tr_Agb , p.value = 0.01 )
+Agb_Up = rownames(tmp)[ tmp == 1 ]
+Agb_Down = rownames(tmp)[ tmp == -1 ]
+
+
+myCol <- brewer.pal(3, "Pastel2")
+
+v = venn.diagram(
+        x = list(Tia_Up, Dab_Up, Agb_Up),
+        NULL,
+        imagetype="png" ,
+        height = 480 , 
+        width = 480 , 
+        resolution = 300,
+        compression = "lzw",
+        category.names = c("Tiassale" , "Dabou" , "Agbodville"),
+        lwd = 2,
+        lty = 'blank',
+        fill = myCol,
+        cex = .6,
+        fontface = "bold",
+        fontfamily = "sans",
+        cat.cex = 0.6,
+        cat.fontface = "bold",
+        cat.default.pos = "outer",
+        cat.pos = c(-27, 27, 135),
+        cat.dist = c(0.055, 0.055, 0.085),
+        cat.fontfamily = "sans",
+        rotation = 1
+)
+# Chart
+venn.diagram(
+        x = list(Tia_Up, Dab_Up, Agb_Up),
+        '03_DGE_analysis_figures/vennDiagram_UpGenes_FDR0.01.png',
+        imagetype="png" , height = 480 , width = 480 , resolution = 300, compression = "lzw",
+        category.names = c("Tiassale" , "Dabou" , "Agbodville"),
+        lwd = 2, lty = 'blank', fill = myCol, cex = .6,
+        fontface = "bold", fontfamily = "sans", cat.cex = 0.6, cat.fontface = "bold",
+        cat.default.pos = "outer", cat.pos = c(-27, 27, 135), cat.dist = c(0.055, 0.055, 0.085),
+        cat.fontfamily = "sans", rotation = 1 )
+venn.diagram(
+        x = list(Tia_Down, Dab_Down, Agb_Down),
+        '03_DGE_analysis_figures/vennDiagram_DownGenes_FDR0.01.png',
+        imagetype="png" , height = 480 , width = 480 , resolution = 300, compression = "lzw",
+        category.names = c("Tiassale" , "Dabou" , "Agbodville"),
+        lwd = 2, lty = 'blank', fill = myCol, cex = .6,
+        fontface = "bold", fontfamily = "sans", cat.cex = 0.6, cat.fontface = "bold",
+        cat.default.pos = "outer", cat.pos = c(-27, 27, 135), cat.dist = c(0.055, 0.055, 0.085),
+        cat.fontfamily = "sans", rotation = 1 )
+```
+![Venn diagram of Up genes (FDR<0.01) among field populations, with respect to lab populations - control insecticide](03_DGE_analysis_figures/vennDiagram_UpGenes_FDR0.01.png)
+![Venn diagram of Down genes (FDR<0.01) among field populations, with respect to lab populations - control insecticide](03_DGE_analysis_figures/vennDiagram_DownGenes_FDR0.01.png)
+For each field population, most of their DE genes are in common with at least one other population. There is, however, a lot of genes uniquely deferentially expressed. 
+
+Compare deltamethrin survivors vs. 2 Lab controls (NW 09/11/2020)
+```{r}
+con_AgbD_Lab2 <- makeContrasts( mixed_insecticideAgb_D  - mixed_insecticideLab_C ,
+                                levels = model_labMixed_insecticide )
+con_DabD_Lab2 <- makeContrasts( mixed_insecticideDab_D  - mixed_insecticideLab_C ,
+                                levels = model_labMixed_insecticide )
+con_TiaD_Lab2 <- makeContrasts( mixed_insecticideTia_D  - mixed_insecticideLab_C ,
+                                levels = model_labMixed_insecticide )
+
+tr_AgbD <- glmTreat(fitted_labMixed_insecticide_GLM, contrast=con_AgbD_Lab2, lfc=0) # no Log2FC threshold
+print('Agb D versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests( tr_AgbD , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 . I want to use FDR < 0.01
+tmp = topTags(tr_AgbD , n = nrow(tr_AgbD))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Agb_D_Lab2_C.edgeR_mixedModel.allGenes.txt',sep='/') )
+
+tr_DabD <- glmTreat(fitted_labMixed_insecticide_GLM, contrast=con_DabD_Lab2, lfc=0) # no Log2FC threshold
+print('Dab D versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests( tr_DabD , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr_DabD , n = nrow(tr_DabD))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Dab_D_Lab2_C.edgeR_mixedModel.allGenes.txt',sep='/') )
+
+
+tr_TiaD <- glmTreat(fitted_labMixed_insecticide_GLM, contrast=con_TiaD_Lab2, lfc=0) # no Log2FC threshold
+print('Tia D versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests( tr_TiaD , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr_TiaD , n = nrow(tr_TiaD))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Tia_D_Lab2_C.edgeR_mixedModel.allGenes.txt',sep='/') )
+```
+
+Compare malathion survivors vs. 2 Lab controls (NW 09/11/2020)
+```{r}
+con_AgbM_Lab2 <- makeContrasts( mixed_insecticideAgb_M  - mixed_insecticideLab_C ,
+                                levels = model_labMixed_insecticide )
+con_DabM_Lab2 <- makeContrasts( mixed_insecticideDab_M  - mixed_insecticideLab_C ,
+                                levels = model_labMixed_insecticide )
+con_TiaM_Lab2 <- makeContrasts( mixed_insecticideTia_M  - mixed_insecticideLab_C ,
+                                levels = model_labMixed_insecticide )
+
+tr_AgbM <- glmTreat(fitted_labMixed_insecticide_GLM, contrast=con_AgbM_Lab2, lfc=0) # no Log2FC threshold
+print('Agb M versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests( tr_AgbM , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 . I want to use FDR < 0.01
+tmp = topTags(tr_AgbM , n = nrow(tr_AgbM))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Agb_M_Lab2_C.edgeR_mixedModel.allGenes.txt',sep='/') )
+
+tr_DabM <- glmTreat(fitted_labMixed_insecticide_GLM, contrast=con_DabM_Lab2, lfc=0) # no Log2FC threshold
+print('Dab M versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests( tr_DabM , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr_DabM , n = nrow(tr_DabM))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Dab_M_Lab2_C.edgeR_mixedModel.allGenes.txt',sep='/') )
+
+
+tr_TiaM <- glmTreat(fitted_labMixed_insecticide_GLM, contrast=con_TiaM_Lab2, lfc=0) # no Log2FC threshold
+print('Tia M versus lab strains - control treatment - fdr < 0.01')
+print(summary(decideTests( tr_TiaM , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr_TiaM , n = nrow(tr_TiaM))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Tia_M_Lab2_C.edgeR_mixedModel.allGenes.txt',sep='/') )
+```
+
+We can also look at genes deferentially expressed between the field populations :
+```{r pop3}
+con_Agb_Dab <- makeContrasts( pop_insecticideAgb_C  - pop_insecticideDab_C ,
+                              levels = model_population_insecticide )
+con_Dab_Tia <- makeContrasts( pop_insecticideDab_C  - pop_insecticideTia_C ,
+                              levels = model_population_insecticide )
+con_Agb_Tia <- makeContrasts( pop_insecticideAgb_C  - pop_insecticideTia_C ,
+                              levels = model_population_insecticide )
+
+tr_Agb_Dab <- glmTreat(fitted_population_insecticide_GLM, contrast=con_Agb_Dab, lfc=0) # no Log2FC threshold
+print('Agb versus Dab - control treatment - fdr < 0.05')
+print(summary(decideTests( tr_Agb_Dab , p.value = 0.05 ))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr_Agb_Dab , n = nrow(tr_Agb_Dab))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Agb_C_Dab_C.edgeR_separatedModel.allGenes.txt',sep='/') )
+
+tr_Dab_Tia <- glmTreat(fitted_population_insecticide_GLM, contrast=con_Dab_Tia, lfc=0) # no Log2FC threshold
+print('Dab versus Tia - control treatment - fdr < 0.05')
+print(summary(decideTests( tr_Dab_Tia , p.value = 0.05 ))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr_Dab_Tia , n = nrow(tr_Dab_Tia))$table # grabbing all genes DE info  ## fixed 24/10/2020
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Dab_C_Tia_C.edgeR_separatedModel.allGenes.txt',sep='/') )
+
+tr_Agb_Tia <- glmTreat(fitted_population_insecticide_GLM, contrast=con_Agb_Tia, lfc=0) # no Log2FC threshold
+print('Agb versus Tia - control treatment - fdr < 0.05')
+print(summary(decideTests( tr_Agb_Tia , p.value = 0.05 ))) #by default : BH , FDR <= 0.05 
+tmp = topTags(tr_Agb_Tia , n = nrow(tr_Dab_Tia))$table # grabbing all genes DE info
+tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+write.table( tmp , paste('03_DGE_analysis_results','contrast_Agb_C_Tia_C.edgeR_separatedModel.allGenes.txt',sep='/') )
+
+```
+
+Field strains only show a handful of DE genes when compared together ( for the control treatment ), and only when the fdr threshold is set at 0.05. At a threshold of 0.01 nothing is detected as significantly DE.
+This could appear to be in contradiction with the high number of uniquely DE genes for each field populations with respect to lab strains, but it can actually be coherent with a case where all field strains have about the same difference with the lab strains, but a high amount of noise limits our ability to detect some DE genes in some field populations.
+
+My personal interpretation is that it can make sense to group the field population for that specific contrast. This is confirmed by the high number of DE genes obtained when grouping Field strains. If these populations where not cohesive, I would expect a lower number of significantly DE genes.
+
+
+## 3.4. Examine the effect of insecticide exposure on expression
+
+To evaluate the effect of exposure to different insecticide on the different field populations,
+I will first compare each case to the relevant control.
+I can reuse the models I have built previously.
+
+```{r insecticide1 }
+# I will use a list to store contrasts in order to automate some of the operations
+contrasts_list = list( 'Agboville_D_vs_C' =  makeContrasts( pop_insecticideAgb_D  - pop_insecticideAgb_C , 
+                                                          levels = model_population_insecticide ),
+                       'Agboville_M_vs_C' =  makeContrasts( pop_insecticideAgb_M  - pop_insecticideAgb_C , 
+                                                          levels = model_population_insecticide ),
+                       'Agboville_D_vs_M' =  makeContrasts( pop_insecticideAgb_D - pop_insecticideAgb_M , 
+                                                          levels = model_population_insecticide ),
+                       'Dabou_D_vs_C' =  makeContrasts( pop_insecticideDab_D  - pop_insecticideDab_C , 
+                                                          levels = model_population_insecticide ) ,
+                       'Dabou_M_vs_C' =  makeContrasts( pop_insecticideDab_M  - pop_insecticideDab_C , 
+                                                          levels = model_population_insecticide ),
+                       'Dabou_D_vs_M' =  makeContrasts( pop_insecticideDab_D  - pop_insecticideDab_M , 
+                                                          levels = model_population_insecticide ),
+                       'Tiassale_D_vs_C' =  makeContrasts( pop_insecticideTia_D  - pop_insecticideTia_C , 
+                                                          levels = model_population_insecticide ),
+                       'Tiassale_M_vs_C' =  makeContrasts( pop_insecticideTia_M  - pop_insecticideTia_C , 
+                                                          levels = model_population_insecticide ) ,
+                       'Tiassale_D_vs_M' =  makeContrasts( pop_insecticideTia_D  - pop_insecticideTia_M, 
+                                                          levels = model_population_insecticide ) )
+
+
+for (con_name in names(contrasts_list)){
+ con = contrasts_list[[con_name]]
+ tr <- glmTreat(fitted_population_insecticide_GLM, contrast=con, lfc=0) # no Log2FC threshold
+ print(paste(con_name,'- control treatment - fdr < 0.05'))
+ print(summary(decideTests( tr , p.value = 0.05 ))) #by default : BH , FDR <= 0.05 
+ tmp = topTags(tr , n = nrow(tr))$table # grabbing all genes DE info
+ tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+ tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+ write.table( tmp , paste('03_DGE_analysis_results',paste0('contrast_',con_name,'.edgeR_separatedModel.allGenes.txt'),sep='/') )
+ }
+
+```
+There is little to no significant difference between the control and insecticide conditions for each populations.
+
+Let's see if grouping the Field population changes anything.
+```{r insecticide2 }
+# I will use a list to store contrasts in order to automate some of the operations
+contrasts_list = list( 'Field_D_vs_C' =  makeContrasts( env_insecticideField_D  - env_insecticideField_C , 
+                                                          levels = model_environment_insecticide ),
+                       'Field_M_vs_C' =  makeContrasts( env_insecticideField_M  - env_insecticideField_C , 
+                                                          levels = model_environment_insecticide ),
+                       'Field_D_vs_M' =  makeContrasts( env_insecticideField_D  - env_insecticideField_M , 
+                                                          levels = model_environment_insecticide ) )
+  
+for (con_name in names(contrasts_list)){
+ con = contrasts_list[[con_name]]
+ tr <- glmTreat(fitted_environment_insecticide_GLM, contrast=con, lfc=0) # no Log2FC threshold
+ print(paste(con_name,'- control treatment - fdr < 0.01'))
+ print(summary(decideTests( tr , p.value = 0.01 ))) #by default : BH , FDR <= 0.05 
+ tmp = topTags(tr , n = nrow(tr))$table # grabbing all genes DE info
+ tmp$gene_name = annotations[ rownames(tmp) , 'gene_name' ] #adding annotations
+ tmp = tmp[ , c(6,1,2,3,4,5)] #reordering columns
+ write.table( tmp , paste('03_DGE_analysis_results',paste0('contrast_',con_name,'.edgeR_groupedModel.allGenes.txt'),sep='/') )
+}
+
+```
+When grouping field populations, we are able to detect a handful of genes as significantly DE (FDR threshold 0.01) between Malathion and Control , as well as between Malathion and Deltamethrin.
+
+# These results were used to prepare S3 and S4 Tables for publicaiton.
