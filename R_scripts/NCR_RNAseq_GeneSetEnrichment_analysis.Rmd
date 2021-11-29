@@ -1,0 +1,273 @@
+---
+title: "NCR RNAseq - enrichment analysis of gene lists of interest"
+author: "WD, NW"
+description: "This R code is to replicate the analyses, figures and tables from the research article entitled: Multi-insecticide resistant malaria vectors in the field remain susceptible to malathion, despite the presence of Ace1 point mutations, 2021"
+date: "9/28/2020"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+```
+
+Importing libraries :
+```{r import }
+library(fgsea)
+library(data.table)
+library(plotly)
+library(tidyverse)
+
+# set baseFolder / working directory to a "data" folder where all relevant STables "input_data" are saved as .txt files.
+# baseFolder='~/data/'
+
+```
+
+## 1. Loading up the data
+
+```{r load_gene_list}
+
+geneLists = read.table( paste( baseFolder , 'NCR_annotation_V4_gsea_new4real.txt' , sep = '/' ) , header=T ) 
+# 93 P450 clan = 90 P450 + 2 x cyt b5 + NADPH red 
+
+geneLists <- geneLists%>%
+  rename(enzyme_family = new_gsea)
+
+head(geneLists)
+
+table( geneLists$enzyme_family )
+```
+
+```{r load_DE_file}
+## change comments depending on the comparison one wants to look at
+
+# fileName = 'contrast_Field_Lab_C.edgeR_groupedModel.allGenes.txt' #comparison of 3 field populations grouped versus 2 lab grouped
+
+# fileName = 'contrast_Agb_Lab_C.edgeR_mixedModel.allGenes.txt' #comparison of Agboville (NEC) versus 2 lab grouped
+# fileName = 'contrast_Dab_Lab_C.edgeR_mixedModel.allGenes.txt' #comparison of Dabou (NEC) versus 2 lab grouped
+fileName = 'contrast_Tia_Lab_C.edgeR_mixedModel.allGenes.txt' #comparison of Tiassalé (NEC) versus 2 lab grouped
+
+DEinfo = read.table( paste( baseFolder , '03_DGE_analysis_results' , fileName , sep='/' ) , header=T )
+
+summary(DEinfo)
+```
+
+Declaring a gene DE if the fdr is 0.01 
+and with no LFC threshold.
+```{r}
+
+DEgenes = rownames( DEinfo )[ DEinfo$FDR < 0.01 ]
+print( paste( 'number of DE genes :' , length(DEgenes) ))
+```
+...
+
+
+
+## 2. gsea curve
+
+Using the [fgsea package](http://bioconductor.org/packages/release/bioc/html/fgsea.html)
+
+Performing a GSEA analysis :
+```{r}
+
+gene_lists = list()
+
+for( i in unique(geneLists$enzyme_family) )
+{
+  if( !is.na(i) ){
+  if( sum(geneLists$enzyme_family == i, na.rm = TRUE) >10 ){
+  gene_lists[[ i ]] = geneLists$gene_id[ geneLists$enzyme_family == i ]    
+  }}
+}
+
+gene_lists[['cuticular_protein_CPR']]
+DEinfo[  gene_lists$cuticular_protein_CPR , ]
+
+DEinfo[  gene_lists[['cuticular_protein_CPR']]  , ]
+sum ( !is.na( DEinfo[ gene_lists$P450, 'logFC' ]  ) )
+sum ( !is.na( DEinfo[ gene_lists$cuticular_protein_CPR, 'logFC' ]  ) )
+
+
+lfc = DEinfo$logFC
+ranks = lfc
+names(ranks) = rownames(DEinfo)
+
+gseaRes = fgsea( gene_lists , ranks , nperm=10000 )
+print(gseaRes)
+
+```
+
+Lists COE and P450 seems to be significantly enriched.
+
+
+I also perform a fisher test, to complement the GSEA whose metric is not ideal (here, it only accounts for log2FDR (should be log2FC), not for FDR) :
+```{r}
+
+
+nbSets = length(gene_lists)
+fisherTestEnrichment = data.frame( nbGenes = rep(0,nbSets)   ,
+                                   row.names = names(gene_lists) )
+for ( i in names( gene_lists ) )
+{
+ fisherTestEnrichment[ i , 'nbGenes' ] = length(gene_lists[[i]])
+}
+
+PV = c()
+DE = c()
+for ( i in names( gene_lists ) )
+{
+  general = c(  sum( DEinfo$FDR >= 0.01 ) , sum( DEinfo$FDR < 0.01 ) ) 
+  set = c(  sum( DEinfo[ gene_lists[[i]] , 'FDR']  >= 0.01  , na.rm=T)  , sum( DEinfo[ gene_lists[[i]] , 'FDR']  < 0.01  , na.rm=T) )
+    
+  r = fisher.test( matrix( c(general , set)  , nrow=2 , byrow=T) )
+  DE = c( DE , set[2] )
+  PV = c( PV , r$p.value )
+    
+}
+fisherTestEnrichment['nbDE'] = DE
+fisherTestEnrichment['pval'] = PV
+fisherTestEnrichment['FDR'] = p.adjust(PV , method = 'BH')
+
+
+print('general population :')
+print('non-DE DE')
+print(general)
+
+fisherTestEnrichment
+```
+When adjusting for multiple testing, no set is seen as significantly enriched, given that a large fraction of genes are significantly DE.
+
+However, note that some small sets have a all their genes enriched, so further enquiry may still be of interest.
+
+
+
+```{r echo=FALSE}
+
+
+makeInteractiveGSEAplot = function( DEGgeneTable , geneVector , titleLabel, DE_threshold=0.01 , LFC_threshold=0.0  )
+{
+  ## defining the statistic used for ranking in gsea
+  stats = DEGgeneTable$logFC
+  names(stats) = rownames(DEGgeneTable)
+  pathway = geneVector
+  
+  ## getting the ES curve from fgsea
+  rnk <- rank(-stats)
+  ord <- order(rnk)
+  statsAdj <- stats[ord]
+  statsAdj <- sign(statsAdj) * (abs(statsAdj)^1)
+  statsAdj <- statsAdj/max(abs(statsAdj))
+  pathway <- unname(as.vector(na.omit(match(pathway, names(statsAdj)))))
+  pathway <- sort(pathway)
+  gseaRes <- calcGseaStat(statsAdj, selectedStats = pathway, 
+                          returnAllExtremes = TRUE)
+  tops = gseaRes[['tops']]
+  bottoms = gseaRes[['bottoms']]
+  
+  ## defining log2FC breaks projected onto ranked log2FC
+  posBreaks = c()
+  lblBreaks = 5:-5
+  for ( i in lblBreaks )
+  {
+    posBreaks  = c(posBreaks , Position(function(x) x <= i, stats[ord])  )
+  }
+  
+  # defining DE statistical significance 
+  statsSig =  as.factor( ( DEGgeneTable$FDR <= DE_threshold ) * sign(DEGgeneTable$logFC) )
+    
+  # ordering the gene in the geneSet of interest according to their LFC
+  M = names( stats[ord] )  %in% geneVector
+  orderedGeneSet = names(stats[ord][pathway])#names(stats[ord][M]) # ordered data in the set
+  
+  ## creating objects to plot the curve
+  n <- length(statsAdj)
+  xs <- as.vector(rbind(pathway - 1, pathway))
+  ys <- as.vector(rbind(bottoms, tops))
+  toPlot <- data.frame(rnk = c(0, xs, n + 1), es = c(0, ys, 0) )
+  diff <- (max(tops) - min(bottoms))/8
+  x = y = NULL
+  
+  ## plotly only
+  pp <- plot_ly(data=toPlot, x=~rnk, y= ~es , width = 1000, height = 500)  %>%  
+    layout(title = titleLabel, 
+           xaxis = list( tickvals=posBreaks , ticktext=lblBreaks , title= "log2FC (ranked)"  ) , 
+           yaxis=list(title='Enrichment Score')  ) %>% 
+    add_segments( 
+      x = (1:length(statsSig)), 
+      y = -diff/4, 
+      xend = (1:length(statsSig)), 
+      yend = diff/4 , 
+      color= c('underexpressed','non-significant','overexpressed')[statsSig[ord] ] , 
+      colors = c('gray','red','blue') ,
+      line=list(width = 0.25) , 
+      hoverinfo="none") %>%
+    add_lines( showlegend = FALSE, color = I("green"), hoverinfo = "none") %>%  
+    add_segments(x = pathway, 
+                 y = rep(-diff/2,length(pathway)), 
+                 xend = pathway, 
+                 yend = rep(diff/2,length(pathway)), 
+                 color = I("black"), 
+                 text = paste( paste( orderedGeneSet , DEGgeneTable[orderedGeneSet , 'gene_name'] ,sep=':' ) , 
+                               paste('log2FC' , format(stats[orderedGeneSet] , digits=3) ),  
+                               paste('FDR : ' , format(DEGgeneTable[ orderedGeneSet , 'FDR'] , digits=3 ) ) , 
+                               sep='\n') ,
+                 name = "genes in group"
+                 )
+  pp
+}
+
+```
+
+## Visualisation of GSEA enrichement
+
+I do this interactive visualization for all families with more than 10 genes :
+
+```{r}
+group="P450_clan"
+pp = makeInteractiveGSEAplot( DEinfo , gene_lists[[group]] , titleLabel = paste("Field vs. Lab . Control -" , group ) ,  DE_threshold=0.01 , LFC_threshold=0.0  )
+pp
+```
+
+```{r}
+group="COE"
+pp = makeInteractiveGSEAplot( DEinfo , gene_lists[[group]] , titleLabel = paste("Field vs. Lab . Control -" , group ) ,  DE_threshold=0.01 , LFC_threshold=0.0  )
+pp
+```
+
+```{r}
+group="GST"
+pp = makeInteractiveGSEAplot( DEinfo , gene_lists[[group]] , titleLabel = paste("Field vs. Lab . Control -" , group ) ,  DE_threshold=0.01 , LFC_threshold=0.0  )
+pp
+```
+
+```{r}
+group="UGT"
+pp = makeInteractiveGSEAplot( DEinfo , gene_lists[[group]] , titleLabel = paste("Field vs. Lab . Control -" , group ) ,  DE_threshold=0.01 , LFC_threshold=0.0  )
+pp
+```
+
+
+```{r}
+group="ABC_transporter"
+pp = makeInteractiveGSEAplot( DEinfo , gene_lists[[group]] , titleLabel = paste("Field vs. Lab . Control -" , group ) ,  DE_threshold=0.01 , LFC_threshold=0.0  )
+pp
+```
+
+
+```{r}
+group="ribosomal_protein"
+pp = makeInteractiveGSEAplot( DEinfo , gene_lists[[group]] , titleLabel = paste("Field vs. Lab . Control -" , group ) ,  DE_threshold=0.01 , LFC_threshold=0.0  )
+pp
+```
+
+```{r}
+group="cuticular_protein_CPLC"
+pp = makeInteractiveGSEAplot( DEinfo , gene_lists[[group]] , titleLabel = paste("Field vs. Lab . Control -" , group ) ,  DE_threshold=0.01 , LFC_threshold=0.0  )
+pp
+```
+
+```{r}
+group="H+_transporting_ATP_synthase"
+pp = makeInteractiveGSEAplot( DEinfo , gene_lists[[group]] , titleLabel = paste("Field vs. Lab . Control -" , group ) ,  DE_threshold=0.01 , LFC_threshold=0.0  )
+pp
+```
+
