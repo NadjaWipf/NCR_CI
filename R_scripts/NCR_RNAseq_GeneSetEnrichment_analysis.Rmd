@@ -24,8 +24,11 @@ library(tidyverse)
 
 ## 1. Loading up the data
 
+The supplementary file S2A Table provides the full annotation list of the 13,299 Anopheles coluzzii Ngousso (ACON) genes based on orthology and blastp search as well as the gene sets used for enrichment analysis (GSEA).
+
 ```{r load_gene_list}
 
+## use here the file containing gene sets of interest (from Supp. file S2A of our publication)
 geneLists = read.table( paste( baseFolder , 'NCR_annotation_V4_gsea_new4real.txt' , sep = '/' ) , header=T ) 
 # 93 P450 clan = 90 P450 + 2 x cyt b5 + NADPH red 
 
