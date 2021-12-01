@@ -1,0 +1,18 @@
+#!/usr/bin/bash
+
+mkdir variant_05.03_classify_regions_SNPs
+
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON001356-RA variant_05.02_extract_regions_from_VCF/ACON001356_Ace1.RWKB01000004\:757024-761580.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON001356_Ace1.RWKB01000004\:757024-761580.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON001722-RA variant_05.02_extract_regions_from_VCF/ACON001722_Ace1-copy.RWKB01000004\:6157151-6158924.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON001722_Ace1-copy.RWKB01000004\:6157151-6158924.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON002862-RA variant_05.02_extract_regions_from_VCF/ACON002862_CYP6AA1.RWKB01000019\:1726823-1728443.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON002862_CYP6AA1.RWKB01000019\:1726823-1728443.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON002865-RA variant_05.02_extract_regions_from_VCF/ACON002865_CYP6P3.RWKB01000019\:1737394-1739002.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON002865_CYP6P3.RWKB01000019\:1737394-1739002.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON002866-RA variant_05.02_extract_regions_from_VCF/ACON002866_CYP6P5.RWKB01000019\:1739861-1741489.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON002866_CYP6P5.RWKB01000019\:1739861-1741489.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON002867-RA variant_05.02_extract_regions_from_VCF/ACON002867_CYP6P4.RWKB01000019\:1743074-1744662.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON002867_CYP6P4.RWKB01000019\:1743074-1744662.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON002868-RA variant_05.02_extract_regions_from_VCF/ACON002868_CYP6P1.RWKB01000019\:1745239-1746847.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON002868_CYP6P1.RWKB01000019\:1745239-1746847.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON002869-RA variant_05.02_extract_regions_from_VCF/ACON002869_CYP6P2.RWKB01000019\:1747294-1748885.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON002869_CYP6P2.RWKB01000019\:1747294-1748885.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON004707-RD variant_05.02_extract_regions_from_VCF/ACON004707_Vgsc.RWKB01000028\:836059-906868.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON004707_Vgsc.RWKB01000028\:836059-906868.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON005756-RA variant_05.02_extract_regions_from_VCF/ACON005756_Coeae1d.RWKB01000005\:5797482-5799440.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON005756_Coeae1d.RWKB01000005\:5797482-5799440.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON006028-RA variant_05.02_extract_regions_from_VCF/ACON006028_Rdl.RWKB01000005\:703331-771531.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON006028_Rdl.RWKB01000005\:703331-771531.vcf.recode.vcf
+
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON006048-RA variant_05.02_extract_regions_from_VCF/ACON006048_Cyp4j5.RWKB01000005\:503054-504742.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON006048_Cyp4j5.RWKB01000005\:503054-504742.vcf.recode.vcf
+python ../python_script/classify_SNP_as_synonymous_nonsynonymous.py ACON009194-RA variant_05.02_extract_regions_from_VCF/ACON009194_Gste2.RWKB01000020\:3758534-3759363.vcf.recode.vcf variant_05.03_classify_regions_SNPs/ACON009194_Gste2.RWKB01000020\:3758534-3759363.vcf.recode.vcf
