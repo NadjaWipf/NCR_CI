@@ -1,7 +1,7 @@
 ####################################################################################################################################################
 ## This R code is to replicate the analyses, figures and tables from the research article entitled:
 ## "Multi-insecticide resistant malaria vectors in the field remain susceptible to malathion, despite the presence of Ace1 point mutations", 2021
-## Analyses: DNA genotyping of mosquito legs, calculate mutant allele frequencies
+## Analyses: Visualisating differential gene expression data
 ## Figures: Fig 3, Fig 4, Fig 5, S3 Fig
 ## Code written by NW
 ####################################################################################################################################################
